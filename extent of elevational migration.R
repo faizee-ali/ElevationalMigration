@@ -1,0 +1,96 @@
+library(ape)
+library(geiger)
+library(phytools)
+library(coxme)
+library(evobiR)
+library(nlme)
+library(tidyverse)
+library(phangorn)
+
+#load data
+dat.1 <- read.delim("data/ebd_final_thinned_200m.txt", sep = "\t", header = T, quote = "", stringsAsFactors = F, na.strings = c(""," ",NA))
+#dat.1<-dat.1[,-27]
+
+#### Keep only full species data
+dat.1<-dat.1 %>% filter(CATEGORY == "species" | CATEGORY == "issf")
+
+##Separating eastern and western himalayas
+dat1E<-dat.1
+rm(dat.1)
+
+
+#### Creating a list of unique species
+
+uniSpe_east <- dat1E %>% filter(CATEGORY == "species" | CATEGORY == "issf")
+uniSpe_east <- unique(uniSpe_east[, "COMMON.NAME"]) %>% data.frame()
+
+colnames(uniSpe_east) <- "Species"
+
+
+for (minSample in c(30, 60)) {
+    for (ds in c("05.q1", "05.q2", "05.q3", "95.q1", "95.q2", "95.q3", "50.q1", "50.q2", "50.q3")) {
+        load(paste("resample/eBird_final_resampled_", ds, ".Rdata", sep = ""))
+        B.elev <- sapply(1:1000, function(x) rs[[x]][, 1])
+        B.n <-    sapply(1:1000, function(x) rs[[x]][, 2])
+        W.elev <- sapply(1:1000, function(x) rs[[x]][, 3])
+        W.n <-    sapply(1:1000, function(x) rs[[x]][, 4])
+        
+        diff <- B.elev - W.elev
+        dimnames(diff)<-list(uniSpe_east[,1],1:1000)
+        
+        # For each species exclude trials where it has been detected less than 30/60 times in winter or summer
+        if (minSample == 30) diff[W.n < 30 | B.n < 30] <- NA
+        if (minSample == 60) diff[W.n < 60 | B.n < 60] <- NA 
+        diff.sel <- diff[apply(diff, 1, FUN = function(x) sum(is.na(x))) < 1000, ]
+        
+        # Calculate medians of the percentiles over 1000 sets of resampled sampling events. Along with confidence intervals    
+        med.CI <- apply(diff.sel, 1, FUN = function(x) quantile((x), c(0.025, .5, .975), na.rm = TRUE))
+        med.CI <- t(med.CI)
+        med.CI  <- as.data.frame(med.CI)
+        med.CI$Group <- with(med.CI, ifelse(`2.5%` > 0 & `97.5%` > 0, 2, ifelse(`2.5%` < 0 & `97.5%` < 0, 1, 0)))
+        med.CI$LCI_diff <- as.numeric(med.CI$`2.5%`)
+        med.CI$Median_diff <- as.numeric(med.CI$`50%`)
+        med.CI$UCI_diff <- as.numeric(med.CI$`97.5%`)
+        med.CI$Species <- rownames(med.CI)
+        med.CI<-med.CI[,-c(1,2,3)]
+        
+        ## adding median breeding elevations to the same table
+        
+        dimnames(B.elev)<-list(uniSpe_east[,1],1:1000)
+        if (minSample == 30) B.elev[W.n < 30 | B.n < 30] <- NA
+        if (minSample == 60) B.elev[W.n < 60 | B.n < 60] <- NA 
+        B.sel <- B.elev[apply(B.elev, 1, FUN = function(x) sum(is.na(x))) < 1000, ]
+        
+        med.S.CI <- apply(B.sel, 1, FUN = function(x) quantile((x), c(0.025, .5, .975), na.rm = TRUE))
+        med.S.CI <- t(med.S.CI)
+        med.S.CI  <- as.data.frame(med.S.CI)
+        med.S.CI$LCI_S <- as.numeric(med.S.CI$`2.5%`)
+        med.S.CI$Median_S <- as.numeric(med.S.CI$`50%`)
+        med.S.CI$UCI_S <- as.numeric(med.S.CI$`97.5%`)
+        med.S.CI$Species <- rownames(med.S.CI)
+        med.S.CI<-med.S.CI[,-c(1,2,3)]
+        
+        ## adding median winter elevations to the same table
+        
+        dimnames(W.elev)<-list(uniSpe_east[,1],1:1000)
+        if (minSample == 30) W.elev[W.n < 30 | B.n < 30] <- NA
+        if (minSample == 60) W.elev[W.n < 60 | B.n < 60] <- NA 
+        W.sel <- W.elev[apply(W.elev, 1, FUN = function(x) sum(is.na(x))) < 1000, ]
+        
+        med.W.CI <- apply(W.sel, 1, FUN = function(x) quantile((x), c(0.025, .5, .975), na.rm = TRUE))
+        med.W.CI <- t(med.W.CI)
+        med.W.CI  <- as.data.frame(med.W.CI)
+        med.W.CI$LCI_W <- as.numeric(med.W.CI$`2.5%`)
+        med.W.CI$Median_W <- as.numeric(med.W.CI$`50%`)
+        med.W.CI$UCI_W <- as.numeric(med.W.CI$`97.5%`)
+        med.W.CI$Species <- rownames(med.W.CI)
+        med.W.CI<-med.W.CI[,-c(1,2,3)]
+        
+        ts<-left_join(med.CI,med.S.CI, by = "Species") %>% left_join(., med.W.CI, by = "Species", )
+        
+        ts <- ts[c("Species", "Group", "Median_S", "LCI_S", "UCI_S","Median_W","LCI_W","UCI_W","Median_diff","LCI_diff", "UCI_diff")]
+        
+        write.csv(ts, file = paste("results/final_birdlist_filtered",ds,".sam",minSample, ".csv", sep = ""), row.names = F)
+    }
+}
+
